@@ -31,7 +31,7 @@
 
         /* Aesthetic Popup Styling */
         .custom-popup .leaflet-popup-content-wrapper {
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            background: linear-gradient(135deg, #ffffff 0%, #2a5298 100%);
             color: white;
             border-radius: 16px;
             box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
@@ -56,7 +56,7 @@
         }
 
         .popup-logo img {
-            max-width: 100px;
+            max-width: 300px;
             width: 100%;
             height: auto;
             border-radius: 8px;
@@ -70,12 +70,12 @@
         .popup-label {
             font-weight: bold;
             width: 70px;
-            color: #ffaa44;
+            color: #000000;
         }
 
         .popup-value {
             flex: 1;
-            color: #fff;
+            color: #000000;
         }
 
         .popup-divider {
@@ -101,12 +101,12 @@
         const IMG_HEIGHT = 2250;
 
         // Logo URL
-        const LOGO_URL = "https://images.squarespace-cdn.com/content/v1/646683f1b3ddb256f7b1085f/6801d4ff-8a05-4acf-a880-90a06b09cef5/LAKEVIEW+LANDING+FINAL+LOGO+8-14-2025-01.png";
+        const LOGO_URL = "https://static1.squarespace.com/static/646683f1b3ddb256f7b1085f/t/68c314352bdf2d375a2d30f3/1736807703780/";
 
         // Create map with Simple CRS
         var map = L.map('map', {
             crs: L.CRS.Simple,
-            minZoom: -2,
+            minZoom: -1.5,
             maxZoom: 8,
             zoomSnap: 0.5,
             zoomDelta: 0.5,
@@ -158,7 +158,7 @@
             if (props.AREA || props.Area || props.area || props.Shape_Area) {
                 let areaVal = props.AREA || props.Area || props.area || props.Shape_Area;
                 areaVal = typeof areaVal === 'number' ? areaVal.toFixed(2) : areaVal;
-                html += `<div class="popup-row"><span class="popup-label">AREA:</span><span class="popup-value">${areaVal}</span></div>`;
+                html += `<div class="popup-row"><span class="popup-label">AREA(SF):</span><span class="popup-value">${areaVal}</span></div>`;
             }
 
             if (props.PRICE || props.Price || props.price) {
@@ -187,6 +187,7 @@
             .then(geojson => {
                 console.log("✅ GeoJSON loaded");
 
+                
                 // Transform coordinates
                 function transformGeometry(geometry) {
                     if (geometry.type === 'Polygon') {
