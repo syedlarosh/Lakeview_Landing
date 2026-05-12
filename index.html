@@ -29,13 +29,20 @@
             background: #1a1a1a;
         }
 
-        /* Aesthetic Popup Styling */
+        /* Aesthetic Popup Styling - FIXED to not block mouse */
         .custom-popup .leaflet-popup-content-wrapper {
             background: linear-gradient(135deg, #ffffff 0%, #2a5298 100%);
             color: white;
             border-radius: 16px;
             box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
             padding: 0;
+            pointer-events: none; /* KEY FIX: Popup mouse ko block nahi karega */
+        }
+        
+        /* But close button needs to be clickable */
+        .custom-popup .leaflet-popup-close-button {
+            pointer-events: auto;
+            cursor: pointer;
         }
 
         .custom-popup .leaflet-popup-content {
@@ -43,10 +50,18 @@
             padding: 15px 20px;
             font-family: 'Segoe UI', Arial, sans-serif;
             min-width: 220px;
+            pointer-events: none; /* Content bhi mouse ko pass karega */
         }
-
-        .custom-popup .leaflet-popup-tip {
-            background: #2a5298;
+        
+        /* Make the entire popup pass mouse events to the map/polygons behind */
+        .custom-popup {
+            pointer-events: none !important;
+        }
+        
+        /* But close button still clickable */
+        .custom-popup .leaflet-popup-close-button {
+            pointer-events: auto !important;
+            z-index: 1000;
         }
 
         .popup-logo {
@@ -136,7 +151,7 @@
             return [newX, newY];
         }
 
-        // Function to create popup content with BIG LOGO + all data
+        // Function to create popup content
         function createPopupContent(props) {
             let blockName = props.BLOCKS || props.block || props.Block || `Block ${props.OBJECTID || ''}`;
 
@@ -187,7 +202,6 @@
             .then(geojson => {
                 console.log("✅ GeoJSON loaded");
 
-                
                 // Transform coordinates
                 function transformGeometry(geometry) {
                     if (geometry.type === 'Polygon') {
@@ -215,57 +229,105 @@
                     }
                 });
 
-                // Add polygons with HOVER popup
-                // Add polygons with HOVER popup (invisible polygons)
-                L.geoJSON(geojson, {
-                    style: {
-                        color: 'transparent',
-                        weight: 0,
-                        fillColor: 'transparent',
-                        fillOpacity: 0,
-                        opacity: 0
-                    },
+                // ========== SOLUTION: Popup mouse ko block nahi karega ==========
+                let currentActiveLayer = null;
+                
+                // Styles
+                const invisibleStyle = {
+                    color: 'transparent',
+                    weight: 0,
+                    fillColor: 'transparent',
+                    fillOpacity: 0,
+                    opacity: 0
+                };
+                
+                const hoverStyle = {
+                    color: '#ff0000',
+                    weight: 3,
+                    fillColor: '#ffaa44',
+                    fillOpacity: 0.5,
+                    opacity: 1
+                };
+                
+                // Add all polygons
+                const geoJsonLayer = L.geoJSON(geojson, {
+                    style: invisibleStyle,
+                    interactive: true,
                     onEachFeature: function (feature, layer) {
-                        let props = feature.properties;
-                        let popupContent = createPopupContent(props);
-
-                        // Bind popup
+                        let popupContent = createPopupContent(feature.properties);
+                        
+                        // Bind popup with offset so it doesn't cover the polygon completely
                         layer.bindPopup(popupContent, {
                             className: 'custom-popup',
                             closeButton: true,
-                            autoClose: true,
-                            closeOnClick: true
+                            autoClose: false,
+                            closeOnClick: false,
+                            offset: [0, -20] // Popup thoda upar rahega
                         });
-
-                        // OPEN POPUP ON MOUSE HOVER
-                        layer.on('mouseover', function (e) {
+                        
+                        // MOUSE ENTER
+                        layer.on('mouseover', function(e) {
+                            L.DomEvent.stopPropagation(e);
+                            
+                            if (currentActiveLayer === layer) return;
+                            
+                            // Remove previous highlight
+                            if (currentActiveLayer) {
+                                currentActiveLayer.setStyle(invisibleStyle);
+                                currentActiveLayer.closePopup();
+                            }
+                            
+                            // Set new active layer
+                            currentActiveLayer = layer;
+                            
+                            // Apply highlight style
+                            layer.setStyle(hoverStyle);
+                            layer.bringToFront();
+                            
+                            // Open popup
                             layer.openPopup();
-                            // ⭐ Hover par color dikhao ⭐
-                            layer.setStyle({
-                                color: '#ff0000',
-                                weight: 3,
-                                fillColor: '#ffaa44',
-                                fillOpacity: 0.5,
-                                opacity: 1
-                            });
                         });
-
-                        // CLOSE POPUP ON MOUSE OUT
-                        layer.on('mouseout', function (e) {
-                            layer.closePopup();
-                            // ⭐ Mouse gayab ho gaya to invisible kar do ⭐
-                            layer.setStyle({
-                                color: 'transparent',
-                                weight: 0,
-                                fillColor: 'transparent',
-                                fillOpacity: 0,
-                                opacity: 0
-                            });
+                        
+                        // MOUSE LEAVE - with check for popup
+                        layer.on('mouseout', function(e) {
+                            // Check if moving to another layer or popup
+                            let toLayer = e.relatedTarget;
+                            
+                            // Small delay to allow moving to another polygon
+                            setTimeout(() => {
+                                if (currentActiveLayer === layer) {
+                                    // Check if mouse is now over another polygon
+                                    let hoveredLayer = null;
+                                    
+                                    // Only reset if mouse is not over any polygon
+                                    if (!hoveredLayer) {
+                                        layer.setStyle(invisibleStyle);
+                                        layer.closePopup();
+                                        currentActiveLayer = null;
+                                    }
+                                }
+                            }, 30);
+                        });
+                        
+                        // Keep polygon active while mouse moves inside
+                        layer.on('mousemove', function(e) {
+                            if (currentActiveLayer === layer) {
+                                layer.setStyle(hoverStyle);
+                            }
                         });
                     }
                 }).addTo(map);
-
-                console.log("✅ Polygons added - Big logo + all data in popup");
+                
+                // Reset when mouse leaves map
+                map.on('mouseout', function() {
+                    if (currentActiveLayer) {
+                        currentActiveLayer.setStyle(invisibleStyle);
+                        currentActiveLayer.closePopup();
+                        currentActiveLayer = null;
+                    }
+                });
+                
+                console.log("✅ POPUP FIXED - Now mouse can go through to other polygons!");
             })
             .catch(error => {
                 console.error('❌ Error:', error);
