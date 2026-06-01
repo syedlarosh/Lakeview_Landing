@@ -2,7 +2,7 @@
 <html>
 
 <head>
-    <title>Full Screen Image with Polygons</title>
+    <title>Full Screen Image with Polygons - Live Google Sheet Data</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -36,10 +36,9 @@
             border-radius: 16px;
             box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
             padding: 0;
-            pointer-events: none; /* KEY FIX: Popup mouse ko block nahi karega */
+            pointer-events: none;
         }
         
-        /* But close button needs to be clickable */
         .custom-popup .leaflet-popup-close-button {
             pointer-events: auto;
             cursor: pointer;
@@ -50,15 +49,13 @@
             padding: 15px 20px;
             font-family: 'Segoe UI', Arial, sans-serif;
             min-width: 220px;
-            pointer-events: none; /* Content bhi mouse ko pass karega */
+            pointer-events: none;
         }
         
-        /* Make the entire popup pass mouse events to the map/polygons behind */
         .custom-popup {
             pointer-events: none !important;
         }
         
-        /* But close button still clickable */
         .custom-popup .leaflet-popup-close-button {
             pointer-events: auto !important;
             z-index: 1000;
@@ -98,12 +95,6 @@
             background: rgba(255, 255, 255, 0.2);
             margin: 10px 0;
         }
-
-        .close-button {
-            color: white;
-            font-size: 18px;
-            font-weight: bold;
-        }
     </style>
 </head>
 
@@ -118,8 +109,18 @@
         // Logo URL
         const LOGO_URL = "https://static1.squarespace.com/static/646683f1b3ddb256f7b1085f/t/68c314352bdf2d375a2d30f3/1736807703780/";
 
+        // Google Sheet ID
+        const SHEET_ID = '1Bz-0pbQlnr2Cj1xYB3Ur37HzNOAAhk1pr5IL8GTg2rE';
+        
+        // Global variables
+        let map;
+        let geoJsonLayer = null;
+        let currentActiveLayer = null;
+        let sheetDataMap = new Map();
+        let isRefreshing = false;
+        
         // Create map with Simple CRS
-        var map = L.map('map', {
+        map = L.map('map', {
             crs: L.CRS.Simple,
             minZoom: -1.5,
             maxZoom: 8,
@@ -151,7 +152,7 @@
             return [newX, newY];
         }
 
-        // Function to create popup content
+        // Function to create popup content from properties
         function createPopupContent(props) {
             let blockName = props.BLOCKS || props.block || props.Block || `Block ${props.OBJECTID || ''}`;
 
@@ -170,15 +171,17 @@
                 html += `<div class="popup-row"><span class="popup-label">LOT:</span><span class="popup-value">${lotVal}</span></div>`;
             }
 
-            if (props.AREA || props.Area || props.area || props.Shape_Area) {
-                let areaVal = props.AREA || props.Area || props.area || props.Shape_Area;
-                areaVal = typeof areaVal === 'number' ? areaVal.toFixed(2) : areaVal;
+            if (props.AREA || props.Area || props.area) {
+                let areaVal = props.AREA || props.Area || props.area;
+                areaVal = String(areaVal).replace(/,/g, '');
+                if(!isNaN(areaVal)) {
+                    areaVal = parseFloat(areaVal).toLocaleString();
+                }
                 html += `<div class="popup-row"><span class="popup-label">AREA(SF):</span><span class="popup-value">${areaVal}</span></div>`;
             }
 
             if (props.PRICE || props.Price || props.price) {
                 let priceVal = props.PRICE || props.Price || props.price;
-                priceVal = typeof priceVal === 'number' ? priceVal.toLocaleString() : priceVal;
                 html += `<div class="popup-row"><span class="popup-label">PRICE:</span><span class="popup-value">${priceVal}</span></div>`;
             }
 
@@ -191,46 +194,220 @@
             return html;
         }
 
-        // Load GeoJSON
-        fetch('data.geojson')
-            .then(response => {
+        // Function to fetch data from Google Sheet
+        async function fetchGoogleSheetData() {
+            try {
+                const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=0`;
+                
+                console.log('Fetching from:', csvUrl);
+                const response = await fetch(csvUrl);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const csvText = await response.text();
+                
+                // Parse CSV
+                const rows = csvText.split('\n');
+                if (rows.length < 2) {
+                    throw new Error('Sheet is empty');
+                }
+                
+                const headers = rows[0].split(',').map(h => h.replace(/"/g, '').trim().toUpperCase());
+                
+                // Find column indices
+                const lotIndex = headers.findIndex(h => h.includes('LOT'));
+                const areaIndex = headers.findIndex(h => h.includes('AREA'));
+                const priceIndex = headers.findIndex(h => h.includes('PRICE'));
+                const builderIndex = headers.findIndex(h => h.includes('BUILDER'));
+                const blocksIndex = headers.findIndex(h => h.includes('BLOCKS'));
+                
+                const newSheetMap = new Map();
+                let validRows = 0;
+                
+                // Parse each row
+                for (let i = 1; i < rows.length; i++) {
+                    if (!rows[i].trim()) continue;
+                    
+                    // Parse CSV line
+                    let values = [];
+                    let inQuote = false;
+                    let currentValue = '';
+                    
+                    for (let char of rows[i]) {
+                        if (char === '"') {
+                            inQuote = !inQuote;
+                        } else if (char === ',' && !inQuote) {
+                            values.push(currentValue.trim());
+                            currentValue = '';
+                        } else {
+                            currentValue += char;
+                        }
+                    }
+                    values.push(currentValue.trim());
+                    
+                    // Clean values
+                    values = values.map(v => v.replace(/^"|"$/g, '').trim());
+                    
+                    const lot = lotIndex >= 0 ? values[lotIndex] : '';
+                    const blocks = blocksIndex >= 0 ? values[blocksIndex] : '';
+                    const area = areaIndex >= 0 ? values[areaIndex] : '';
+                    let price = priceIndex >= 0 ? values[priceIndex] : '';
+                    const builder = builderIndex >= 0 ? values[builderIndex] : '';
+                    
+                    if (lot && blocks) {
+                        const key = `${blocks}_${lot}`;
+                        newSheetMap.set(key, {
+                            LOT: lot,
+                            BLOCKS: blocks,
+                            AREA: area,
+                            PRICE: price,
+                            BUILDER: builder
+                        });
+                        validRows++;
+                        console.log(`Added: Block ${blocks}, Lot ${lot} -> Price: ${price}`);
+                    }
+                }
+                
+                console.log(`✅ Loaded ${validRows} rows from sheet`);
+                return newSheetMap;
+                
+            } catch (error) {
+                console.error('Sheet fetch error:', error);
+                return null;
+            }
+        }
+        
+        // Update polygons with sheet data - FIXED: No glitch
+        function updatePolygonsWithSheetData(sheetMap) {
+            if (!geoJsonLayer || isRefreshing) {
+                return false;
+            }
+            
+            isRefreshing = true;
+            let updatedCount = 0;
+            
+            try {
+                geoJsonLayer.eachLayer(layer => {
+                    const props = layer.feature.properties;
+                    const block = props.BLOCKS || props.block || props.Block;
+                    const lot = props.LOT || props.Lot || props.lot;
+                    
+                    if (block && lot) {
+                        const key = `${block}_${lot}`;
+                        const sheetData = sheetMap.get(key);
+                        
+                        if (sheetData) {
+                            // Update properties
+                            if (sheetData.AREA && sheetData.AREA !== '') {
+                                props.AREA = sheetData.AREA;
+                            }
+                            if (sheetData.PRICE && sheetData.PRICE !== '') {
+                                props.PRICE = sheetData.PRICE;
+                            }
+                            if (sheetData.BUILDER && sheetData.BUILDER !== '') {
+                                props.BUILDER = sheetData.BUILDER;
+                            }
+                            
+                            updatedCount++;
+                            
+                            // FIXED: Smooth popup update without glitch
+                            const wasActive = (currentActiveLayer === layer);
+                            const wasOpen = layer.isPopupOpen();
+                            
+                            // Update popup content smoothly
+                            if (wasActive || wasOpen) {
+                                const wasOpenState = wasOpen;
+                                if (wasOpenState) {
+                                    layer.closePopup();
+                                }
+                                
+                                layer.bindPopup(createPopupContent(props), {
+                                    className: 'custom-popup',
+                                    closeButton: true,
+                                    autoClose: false,
+                                    closeOnClick: false,
+                                    offset: [0, -20]
+                                });
+                                
+                                if (wasOpenState) {
+                                    setTimeout(() => {
+                                        if (currentActiveLayer === layer) {
+                                            layer.openPopup();
+                                        }
+                                    }, 50);
+                                }
+                            } else {
+                                layer.bindPopup(createPopupContent(props), {
+                                    className: 'custom-popup',
+                                    closeButton: true,
+                                    autoClose: false,
+                                    closeOnClick: false,
+                                    offset: [0, -20]
+                                });
+                            }
+                        }
+                    }
+                });
+                
+                console.log(`✅ Updated ${updatedCount} polygons with sheet data`);
+            } finally {
+                setTimeout(() => {
+                    isRefreshing = false;
+                }, 100);
+            }
+            
+            return true;
+        }
+        
+        // Auto refresh function - FIXED: Skip when popup is active
+        async function autoRefreshData() {
+            // Skip refresh if a popup is currently active or refresh in progress
+            if (currentActiveLayer || isRefreshing) {
+                console.log('⏸️ Auto-refresh skipped - popup active or refresh in progress');
+                return;
+            }
+            
+            console.log('🔄 Auto-refreshing data from sheet...');
+            const sheetMap = await fetchGoogleSheetData();
+            if (sheetMap && sheetMap.size > 0) {
+                sheetDataMap = sheetMap;
+                updatePolygonsWithSheetData(sheetDataMap);
+            }
+        }
+        
+        // Load GeoJSON first, then fetch sheet data
+        async function initMap() {
+            try {
+                const response = await fetch('data.geojson');
                 if (!response.ok) {
                     throw new Error('data.geojson not found!');
                 }
-                return response.json();
-            })
-            .then(geojson => {
+                
+                const geojson = await response.json();
                 console.log("✅ GeoJSON loaded");
-
+                
                 // Transform coordinates
-                function transformGeometry(geometry) {
-                    if (geometry.type === 'Polygon') {
-                        geometry.coordinates = geometry.coordinates.map(ring => {
-                            return ring.map(coord => {
-                                return transformGeoJSONtoLeaflet(coord[0], coord[1]);
-                            });
-                        });
-                    }
-                    else if (geometry.type === 'MultiPolygon') {
-                        geometry.coordinates = geometry.coordinates.map(polygon => {
-                            return polygon.map(ring => {
+                geojson.features.forEach(feature => {
+                    if (feature.geometry) {
+                        if (feature.geometry.type === 'Polygon') {
+                            feature.geometry.coordinates = feature.geometry.coordinates.map(ring => {
                                 return ring.map(coord => {
                                     return transformGeoJSONtoLeaflet(coord[0], coord[1]);
                                 });
                             });
-                        });
-                    }
-                    return geometry;
-                }
-
-                geojson.features.forEach(feature => {
-                    if (feature.geometry) {
-                        feature.geometry = transformGeometry(feature.geometry);
+                        } else if (feature.geometry.type === 'MultiPolygon') {
+                            feature.geometry.coordinates = feature.geometry.coordinates.map(polygon => {
+                                return polygon.map(ring => {
+                                    return ring.map(coord => {
+                                        return transformGeoJSONtoLeaflet(coord[0], coord[1]);
+                                    });
+                                });
+                            });
+                        }
                     }
                 });
-
-                // ========== SOLUTION: Popup mouse ko block nahi karega ==========
-                let currentActiveLayer = null;
                 
                 // Styles
                 const invisibleStyle = {
@@ -249,67 +426,46 @@
                     opacity: 1
                 };
                 
-                // Add all polygons
-                const geoJsonLayer = L.geoJSON(geojson, {
+                // Add polygons to map
+                geoJsonLayer = L.geoJSON(geojson, {
                     style: invisibleStyle,
                     interactive: true,
                     onEachFeature: function (feature, layer) {
                         let popupContent = createPopupContent(feature.properties);
                         
-                        // Bind popup with offset so it doesn't cover the polygon completely
                         layer.bindPopup(popupContent, {
                             className: 'custom-popup',
                             closeButton: true,
                             autoClose: false,
                             closeOnClick: false,
-                            offset: [0, -20] // Popup thoda upar rahega
+                            offset: [0, -20]
                         });
                         
-                        // MOUSE ENTER
                         layer.on('mouseover', function(e) {
                             L.DomEvent.stopPropagation(e);
-                            
                             if (currentActiveLayer === layer) return;
                             
-                            // Remove previous highlight
                             if (currentActiveLayer) {
                                 currentActiveLayer.setStyle(invisibleStyle);
                                 currentActiveLayer.closePopup();
                             }
                             
-                            // Set new active layer
                             currentActiveLayer = layer;
-                            
-                            // Apply highlight style
                             layer.setStyle(hoverStyle);
                             layer.bringToFront();
-                            
-                            // Open popup
                             layer.openPopup();
                         });
                         
-                        // MOUSE LEAVE - with check for popup
                         layer.on('mouseout', function(e) {
-                            // Check if moving to another layer or popup
-                            let toLayer = e.relatedTarget;
-                            
-                            // Small delay to allow moving to another polygon
                             setTimeout(() => {
                                 if (currentActiveLayer === layer) {
-                                    // Check if mouse is now over another polygon
-                                    let hoveredLayer = null;
-                                    
-                                    // Only reset if mouse is not over any polygon
-                                    if (!hoveredLayer) {
-                                        layer.setStyle(invisibleStyle);
-                                        layer.closePopup();
-                                        currentActiveLayer = null;
-                                    }
+                                    layer.setStyle(invisibleStyle);
+                                    layer.closePopup();
+                                    currentActiveLayer = null;
                                 }
                             }, 30);
                         });
                         
-                        // Keep polygon active while mouse moves inside
                         layer.on('mousemove', function(e) {
                             if (currentActiveLayer === layer) {
                                 layer.setStyle(hoverStyle);
@@ -318,7 +474,6 @@
                     }
                 }).addTo(map);
                 
-                // Reset when mouse leaves map
                 map.on('mouseout', function() {
                     if (currentActiveLayer) {
                         currentActiveLayer.setStyle(invisibleStyle);
@@ -327,12 +482,28 @@
                     }
                 });
                 
-                console.log("✅ POPUP FIXED - Now mouse can go through to other polygons!");
-            })
-            .catch(error => {
+                console.log("✅ Polygons added to map");
+                
+                // Now fetch Google Sheet data and update polygons
+                const sheetMap = await fetchGoogleSheetData();
+                if (sheetMap && sheetMap.size > 0) {
+                    sheetDataMap = sheetMap;
+                    updatePolygonsWithSheetData(sheetDataMap);
+                }
+                
+                // Auto-refresh every 30 seconds - FIXED: No glitch
+                setInterval(async () => {
+                    await autoRefreshData();
+                }, 30000);
+                
+            } catch (error) {
                 console.error('❌ Error:', error);
-                alert('Error: data.geojson file not found!');
-            });
+                alert('Error loading data. Check console.');
+            }
+        }
+        
+        // Start the app
+        initMap();
     </script>
 </body>
 
